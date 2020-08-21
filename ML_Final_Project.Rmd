@@ -1,5 +1,5 @@
 ---
-title: "Analyzing Weightlifting"
+title: "Analyzing Weightlifting through Wearables"
 author: "Scott Knapp"
 date: "8/20/2020"
 output:
@@ -17,6 +17,7 @@ knitr::opts_chunk$set(fig.width = 8, fig.height = 4,
 
 ## Executive Summary
 
+As part of Course 7, Practical Machine Learning in the Data Science Specialization on Coursera, the goal of this project is to predict the manner in which participants did an exercise.  This is the 'classe' variable in the below dataset.  We will clean and explore the data to choose the variables to predict with.  This report will outline how the models are built, estimate our out-of-sample error utilizing validation tests, and explain how we choose the best model to utilize.  Lastly, we will use this model to predict 20 test cases.
 
 ## Background
 
@@ -37,7 +38,7 @@ library(dplyr)
 ```
 ### Loading the Data
 
-```{r loading}
+```{r loading, cache = TRUE}
 url_train <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
 url_test <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
 
@@ -50,7 +51,7 @@ dim(train_raw); dim(test_raw)
 ### Non-parametric Variables
 
 ```{r text_variables, results = "hide"}
-View(train_data)
+View(train_raw)
 ```
 
 After viewing the data it appears the first 6 features are not applicable to the 
@@ -96,7 +97,7 @@ dim(train_data); dim(test_data)
 
 Lastly, let's convert Classe to a factor variable
 
-```{r}
+```{r factors}
 train_data$classe <- as.factor(train_data$classe)
 ```
 
@@ -105,7 +106,7 @@ train_data$classe <- as.factor(train_data$classe)
 Now, with the data cleaned, we can create split our train_data set into 
 training and validation sets to build our models against.
 
-```{r}
+```{r partition}
 inTrain <- createDataPartition(train_data$classe, p = 3/4, list = FALSE)
 train_set <- train_data[inTrain, ]
 valid_set <- train_data[-inTrain, ]
@@ -121,7 +122,7 @@ the majority of the accuracy to improve model performance.
 
 ### PCA Analysis
 
-```{r}
+```{r PCA}
 train_set_num <- train_set %>%
         select(-classe) %>%
         mutate_all(as.numeric)
@@ -137,7 +138,7 @@ qplot(1:length(pca$sdev), pca$sdev / sum(pca$sdev), ylab = "% Explained",
 From this chart it appears that we seem to get to 99% explaination in between 30 and 40
 features. 
 
-```{r}
+```{r PCA2}
 cumsum(pca$sdev / sum(pca$sdev))[30:40]
 ```
 
@@ -146,73 +147,97 @@ performance issues, we can use this as a constraint on the models.
 
 ## Model Creation
 
-Now it's time to build and train our various models.  We will train 3 models to see
-if one is clearly better than the other models.
-*  Random Forest
+Now it's time to build and train our various models.  Due to having limited computing
+power on a single core, we will not utilze a Random Forest model.  We will instead train 2 models then tune the better performing model to improve results.
+
 *  Recursive Tree
-*  Gradient Boosted Machine
+*  Gradient Boosted Machine using Cross Validation
+*  Gradient Boosted Machine (user-tuned)
 
 We will utilize a Confusion Matrix to compare the result on the Training Set.
 
-### Random Forest (rf)
-```{r, cache = TRUE}
-set.seed(4242)
 
-train_control <- trainControl(method = "cv", number = 3)
-model_rf <- train(classe ~ ., data = train_set, method = "rf", 
-                  trContol = train_control)
-
-model_rf$finalModel
-```
 ### Recursive Tree (rpart)
 
-```{r, cache = TRUE}
+```{r rpart, cache = TRUE}
 set.seed(4242)
 
 model_rpart <- train(classe ~ ., data = train_set, method = "rpart")
 
-model_rpart$finalModel
 ```
 
 ### Gradient Boosted Machine (gbm)
 
-```{r, cache = TRUE}
+```{r gbm, cache = TRUE}
 set.seed(4242)
+
+train_control <- trainControl(method = "cv", number = 3)
+
 
 model_gbm <- train(classe ~ ., data = train_set, method = "gbm", 
                    trControl = train_control, verbose = FALSE)
 
-model_rpart$finalModel
+
+model_gbm$bestTune
 ```
 
+### Gradient Boosted Machine User-Defined(gbm)
+
+With more compute power and time, we can set the tuning grid to a range of 
+values i.e.
+
+- interaction.depth = c(3, 5, 7)
+- n.trees = c(150, 175, 200, 225)
+- shrinkage = c(0.075, 0.10, 0.125)
+- n.minosinnode = c(7, 10, 12, 15)
+
+Here, I have illustrated a single user-defined output.
+
+```{r gbm_user, cache = TRUE}
+set.seed(4242)
+
+train_control <- trainControl(method = "cv", number = 3)
+gbm_grid <- expand.grid(interaction.depth = 5,
+                        n.trees = 175,
+                        shrinkage = 0.075,
+                        n.minobsinnode = 10)
+
+
+model_gbm_user <- train(classe ~ ., data = train_set, method = "gbm", 
+                   trControl = train_control, tuneGrid = gbm_grid, verbose = FALSE)
+
+```
 
 ## Model Selection
 
 Let's validate the model against the validation data
 
-```{r rf, cache = TRUE}
-predict_rf <- predict(model_rf, newdata = valid_set)
+```{r validation, cache = TRUE}
+
 predict_rpart <- predict(model_rpart, newdata = valid_set)
 predict_gbm <- predict(model_gbm, newdata = valid_set)
+predict_gbm_user <- predict(model_gbm_user, newdata = valid_set)
 
-CM_rf <- confusionMatrix(predict_rf, valid_set$classe)
-CM_rpart <- confusionMatrix(factor(predict_rpart), factor(valid_set$classe))
+CM_rpart <- confusionMatrix(predict_rpart, valid_set$classe)
 CM_gbm <- confusionMatrix(predict_gbm, valid_set$classe)
+CM_gbm_user <- confusionMatrix(predict_gbm_user, valid_set$classe)
 
-CM_rf$table
 CM_rpart$table
 CM_gbm$table
+CM_gbm_user$table
 
-CM_rf$overall[1]; CM_rpart$overall[1]; CM_gbm$overall[1]
+
+CM_rpart$overall[1]; CM_gbm$overall[1]; CM_gbm_user$overall[1]
 ```
 
 
 ## Prediction
 
-Now it's time to use our best model [model_rf] to predict values for our Test set.
+Now it's time to use our best model [model_gbm_user] to predict values for our Test set.  Given our success with the validation data, we would expect our out-of-sample
+error to be small.
 
-```{r}
-predict_rf <- predict(model_rf, newdata = test_data)
+```{r prediction}
+predict_rf <- predict(model_gbm_user, newdata = test_data)
 
 predict_rf
 ```
