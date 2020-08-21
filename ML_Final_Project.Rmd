@@ -1,0 +1,226 @@
+---
+title: "Analyzing Weightlifting"
+author: "Scott Knapp"
+date: "8/20/2020"
+output:
+        html_document:
+                toc: true
+                toc_float: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.width = 8, fig.height = 4,
+                      warning=FALSE, message=FALSE)
+```
+
+## Executive Summary
+
+
+## Background
+
+This human activity recognition research has traditionally focused on discriminating between different activities, i.e. to predict "which" activity was performed at a specific point in time (like with the Daily Living Activities dataset above). The approach we propose for the Weight Lifting Exercises dataset is to investigate "how (well)" an activity was performed by the wearer. The "how (well)" investigation has only received little attention so far, even though it potentially provides useful information for a large variety of applications,such as sports training.
+
+In this work (see the paper referenced) we first define quality of execution and investigate three aspects that pertain to qualitative activity recognition: the problem of specifying correct execution, the automatic and robust detection of execution mistakes, and how to provide feedback on the quality of execution to the user. We tried out an on-body sensing approach (dataset here), but also an "ambient sensing approach" (by using Microsoft Kinect - dataset still unavailable)
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+
+## Data Loading and Cleaning
+
+### Setup and Libraries
+
+```{r libraries}
+library(caret)
+library(dplyr)
+```
+### Loading the Data
+
+```{r loading}
+url_train <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+url_test <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+train_raw <- read.csv(url_train)
+test_raw <- read.csv(url_test)
+
+dim(train_raw); dim(test_raw)
+```
+
+### Non-parametric Variables
+
+```{r text_variables, results = "hide"}
+View(train_data)
+```
+
+After viewing the data it appears the first 6 features are not applicable to the 
+analysis, so we can remove them.
+
+```{r remove text_features}
+train_data <- train_raw[,-c(1:6)]
+test_data <- test_raw[, -c(1:6)]
+
+dim(train_data); dim(test_data)
+```
+### Missing Values
+
+We will need to address any NAs in the data.
+
+```{r NAs}
+table(sapply(train_data, function(x) mean(is.na(x))))
+```
+
+This is an interesting result, 87 features have no NA's, while 67 have 97%+ NA's.
+Let's exclude these features for now.
+
+```{r}
+remove_NA <- sapply(train_data, function(x) mean(is.na(x))) == 0
+table(remove_NA)
+
+train_data <- train_data[, remove_NA == TRUE]
+test_data <- test_data[, remove_NA == TRUE]
+dim(train_data); dim(test_data)
+```
+
+### Zero-Variance Variables
+
+Let's also remove the zero-variance features from the modeling.
+
+```{r zero_var, cache = TRUE}
+near_zero <- nearZeroVar(train_data)
+train_data <- train_data[, -near_zero]
+test_data <- test_data[, -near_zero]
+
+dim(train_data); dim(test_data)
+```
+
+Lastly, let's convert Classe to a factor variable
+
+```{r}
+train_data$classe <- as.factor(train_data$classe)
+```
+
+## Partitioning the Datasets to Train and Validation
+
+Now, with the data cleaned, we can create split our train_data set into 
+training and validation sets to build our models against.
+
+```{r}
+inTrain <- createDataPartition(train_data$classe, p = 3/4, list = FALSE)
+train_set <- train_data[inTrain, ]
+valid_set <- train_data[-inTrain, ]
+
+dim(train_set); dim(valid_set)
+```
+
+## Feature Engineering
+
+This is a large dataset with many features, for speed optimization, let's perform
+a Principal Components Analysis to see how many features will be needed to give us
+the majority of the accuracy to improve model performance.
+
+### PCA Analysis
+
+```{r}
+train_set_num <- train_set %>%
+        select(-classe) %>%
+        mutate_all(as.numeric)
+
+train_set_num[is.na(train_set_num)] = 0
+
+pca <- prcomp(train_set_num)
+
+qplot(1:length(pca$sdev), pca$sdev / sum(pca$sdev), ylab = "% Explained", 
+      xlab = "# of Features")
+```
+
+From this chart it appears that we seem to get to 99% explaination in between 30 and 40
+features. 
+
+```{r}
+cumsum(pca$sdev / sum(pca$sdev))[30:40]
+```
+
+Looks like 35 features will get us to 99% of the variance explained, so if we run into
+performance issues, we can use this as a constraint on the models.
+
+## Model Creation
+
+Now it's time to build and train our various models.  We will train 3 models to see
+if one is clearly better than the other models.
+*  Random Forest
+*  Recursive Tree
+*  Gradient Boosted Machine
+
+We will utilize a Confusion Matrix to compare the result on the Training Set.
+
+### Random Forest (rf)
+```{r, cache = TRUE}
+set.seed(4242)
+
+train_control <- trainControl(method = "cv", number = 3)
+model_rf <- train(classe ~ ., data = train_set, method = "rf", 
+                  trContol = train_control)
+
+model_rf$finalModel
+```
+### Recursive Tree (rpart)
+
+```{r, cache = TRUE}
+set.seed(4242)
+
+model_rpart <- train(classe ~ ., data = train_set, method = "rpart")
+
+model_rpart$finalModel
+```
+
+### Gradient Boosted Machine (gbm)
+
+```{r, cache = TRUE}
+set.seed(4242)
+
+model_gbm <- train(classe ~ ., data = train_set, method = "gbm", 
+                   trControl = train_control, verbose = FALSE)
+
+model_rpart$finalModel
+```
+
+
+## Model Selection
+
+Let's validate the model against the validation data
+
+```{r rf, cache = TRUE}
+predict_rf <- predict(model_rf, newdata = valid_set)
+predict_rpart <- predict(model_rpart, newdata = valid_set)
+predict_gbm <- predict(model_gbm, newdata = valid_set)
+
+CM_rf <- confusionMatrix(predict_rf, valid_set$classe)
+CM_rpart <- confusionMatrix(factor(predict_rpart), factor(valid_set$classe))
+CM_gbm <- confusionMatrix(predict_gbm, valid_set$classe)
+
+CM_rf$table
+CM_rpart$table
+CM_gbm$table
+
+CM_rf$overall[1]; CM_rpart$overall[1]; CM_gbm$overall[1]
+```
+
+
+## Prediction
+
+Now it's time to use our best model [model_rf] to predict values for our Test set.
+
+```{r}
+predict_rf <- predict(model_rf, newdata = test_data)
+
+predict_rf
+```
+
+
+
+## Acknowledgements
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. 
+*Qualitative Activity Recognition of Weight Lifting Exercises.* 
+Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
